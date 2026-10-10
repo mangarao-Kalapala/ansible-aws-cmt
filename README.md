@@ -9,8 +9,8 @@ A)Prerequisites:
 Before running the playbook, install the required Ansible collections on control Node:
 
 A) SSH KEY SETUP and connect to Ansible control Node
-scp -i "ecr-key.pem" ecr-key.pem ec2-user@<<PUBLIC-IP-ADDRESS-OF-CONTROL-NODE>>:/home/ec2-user/
-ssh -i "ecr-key.pem" ec2-user@<<PUBLIC-IP-ADDRESS-OF-CONTROL-NODE>>
+scp -i "ecr-key.pem" ecr-key.pem ec2-user@<PUBLIC-IP-ADDRESS-OF-CONTROL-NODE>:/home/ec2-user/
+ssh -i "ecr-key.pem" ec2-user@<PUBLIC-IP-ADDRESS-OF-CONTROL-NODE>
 
 B)install ansible on control Node
 1 sudo yum update -y
@@ -26,14 +26,14 @@ sudo systemctl status sshd
 eval $(ssh-agent -s)
 ssh-add ecr-key.pem  #run this command in home directory: /home/ec2-user
 ssh-add -l
-ssh ec2-user@<<PRIVATE-IP-ADDRESS-OF-NODE2>>
+ssh ec2-user@<PRIVATE-IP-ADDRESS-OF-NODE2>
 
 D) run AWS configuration
 aws configure
 
 C)How to Run playbook:
 # 1.Set your RDS password securely via environment variable
-export RDS_PASSWORD="yourPASSWD321#"
+export RDS_PASSWORD="yourPASSPHRASE32#"
 
 # 2.Run the playbook
 ansible-playbook site.yml
