@@ -1,0 +1,358 @@
+---
+# ============================================================
+# vars/main.yml  — centralised configuration
+# ============================================================
+# Inline here for a single-file example; move to a vars file
+# or group_vars as needed.
+
+# ============================================================
+# PLAYBOOK 1 — Provision AWS Infrastructure
+# ============================================================
+- name: Provision RDS and EC2 infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_region: us-east-1
+    vpc_cidr: "10.0.0.0/16"
+    public_subnet_cidr: "10.0.1.0/24"
+    private_subnet_cidr_1: "10.0.2.0/24"   # RDS requires 2 AZs
+    private_subnet_cidr_2: "10.0.3.0/24"
+    availability_zone_1: "us-east-1a"
+    availability_zone_2: "us-east-1b"
+
+    # EC2 settings
+    ec2_instance_type: "t2.medium"
+    ec2_ami_id: "ami-004021b186a0c56f8"   # Amazon Linux 2 (us-east-1) — update per region
+    ec2_key_name: "ecr-key"           # Must already exist in your AWS account
+    ec2_instance_name: web-app-server
+
+    # RDS settings
+    rds_db_identifier: webapp-mysql-db
+    rds_engine: mysql
+    rds_engine_version: "8.0"
+    rds_instance_class: db.t3.micro
+    rds_allocated_storage: 20
+    rds_db_name: appdb
+    rds_master_username: admin
+    rds_master_password: "{{ lookup('env', 'RDS_PASSWORD') }}"  # Set via env var
+
+    # App settings
+    app_port: 3000
+    docker_image: philippaul/node-mysql-app:02
+
+  tasks:
+
+    # ----------------------------------------------------------
+    # VPC & Networking
+    # ----------------------------------------------------------
+    - name: Create VPC
+      amazon.aws.ec2_vpc_net:
+        name: webapp-vpc
+        cidr_block: "{{ vpc_cidr }}"
+        region: "{{ aws_region }}"
+        tags:
+          Name: webapp-vpc
+          Project: node-mysql-app
+      register: vpc
+
+    - name: Create public subnet (EC2)
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc.id }}"
+        cidr: "{{ public_subnet_cidr }}"
+        az: "{{ availability_zone_1 }}"
+        map_public: true
+        region: "{{ aws_region }}"
+        tags:
+          Name: webapp-public-subnet
+      register: public_subnet
+
+    - name: Create private subnet 1 (RDS — AZ1)
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc.id }}"
+        cidr: "{{ private_subnet_cidr_1 }}"
+        az: "{{ availability_zone_1 }}"
+        region: "{{ aws_region }}"
+        tags:
+          Name: webapp-private-subnet-1
+      register: private_subnet_1
+
+    - name: Create private subnet 2 (RDS — AZ2)
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc.id }}"
+        cidr: "{{ private_subnet_cidr_2 }}"
+        az: "{{ availability_zone_2 }}"
+        region: "{{ aws_region }}"
+        tags:
+          Name: webapp-private-subnet-2
+      register: private_subnet_2
+
+    - name: Create Internet Gateway
+      amazon.aws.ec2_vpc_igw:
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ aws_region }}"
+        tags:
+          Name: webapp-igw
+      register: igw
+
+    - name: Create public route table and attach IGW
+      amazon.aws.ec2_vpc_route_table:
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ aws_region }}"
+        subnets:
+          - "{{ public_subnet.subnet.id }}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ igw.gateway_id }}"
+        tags:
+          Name: webapp-public-rt
+
+    # ----------------------------------------------------------
+    # Security Groups
+    # ----------------------------------------------------------
+    - name: Create EC2 security group
+      amazon.aws.ec2_security_group:
+        name: ec2-webapp-sg
+        description: Security group for EC2 web application server
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ aws_region }}"
+        rules:
+          - proto: tcp
+            ports: [22]
+            cidr_ip: 0.0.0.0/0          # Restrict to your IP in production
+            rule_desc: Allow SSH
+          - proto: tcp
+            ports: [80]
+            cidr_ip: 0.0.0.0/0
+            rule_desc: Allow HTTP
+          - proto: tcp
+            ports: ["{{ app_port }}"]
+            cidr_ip: 0.0.0.0/0
+            rule_desc: Allow Node.js app port
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+        tags:
+          Name: ec2-webapp-sg
+      register: ec2_sg
+
+    - name: Create RDS security group
+      amazon.aws.ec2_security_group:
+        name: rds-webapp-sg
+        description: Security group for RDS to allow MySQL only from EC2 SG
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ aws_region }}"
+        rules:
+          - proto: tcp
+            ports: [3306]
+            group_id: "{{ ec2_sg.group_id }}"   # Only EC2 SG can reach RDS
+            rule_desc: Allow MySQL from EC2 security group
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+        tags:
+          Name: rds-webapp-sg
+      register: rds_sg
+
+    # ----------------------------------------------------------
+    # RDS Subnet Group
+    # ----------------------------------------------------------
+    - name: Create RDS DB subnet group
+      amazon.aws.rds_subnet_group:
+        name: webapp-db-subnet-group
+        description: Subnet group for webapp RDS instance
+        region: "{{ aws_region }}"
+        subnets:
+          - "{{ private_subnet_1.subnet.id }}"
+          - "{{ private_subnet_2.subnet.id }}"
+        state: present
+        tags:
+          Name: webapp-db-subnet-group
+
+    # ----------------------------------------------------------
+    # RDS Instance
+    # ----------------------------------------------------------
+    - name: Provision RDS MySQL instance
+      amazon.aws.rds_instance:
+        db_instance_identifier: "{{ rds_db_identifier }}"
+        db_instance_class: "{{ rds_instance_class }}"
+        engine: "{{ rds_engine }}"
+        engine_version: "{{ rds_engine_version }}"
+        master_username: "{{ rds_master_username }}"
+        master_user_password: "{{ rds_master_password }}"
+        db_name: "{{ rds_db_name }}"
+        allocated_storage: "{{ rds_allocated_storage }}"
+        storage_type: gp2
+        db_subnet_group_name: webapp-db-subnet-group
+        vpc_security_group_ids:
+          - "{{ rds_sg.group_id }}"
+        publicly_accessible: false          # Private — only reachable from EC2
+        multi_az: false
+        backup_retention_period: 7
+        deletion_protection: false
+        region: "{{ aws_region }}"
+        wait: true
+        tags:
+          Name: "{{ rds_db_identifier }}"
+          Project: node-mysql-app
+      register: rds_instance
+
+    - name: Store RDS endpoint for later plays
+      ansible.builtin.set_fact:
+        rds_endpoint: "{{ rds_instance.endpoint.address }}"
+        rds_port: "{{ rds_instance.endpoint.port }}"
+
+    - name: Display RDS endpoint
+      ansible.builtin.debug:
+        msg: "RDS endpoint: {{ rds_endpoint }}:{{ rds_port }}"
+
+    # ----------------------------------------------------------
+    # EC2 Instance
+    # ----------------------------------------------------------
+    - name: Launch EC2 instance
+      amazon.aws.ec2_instance:
+        name: "{{ ec2_instance_name }}"
+        instance_type: "{{ ec2_instance_type }}"
+        image_id: "{{ ec2_ami_id }}"
+        key_name: "{{ ec2_key_name }}"
+        region: "{{ aws_region }}"
+        vpc_subnet_id: "{{ public_subnet.subnet.id }}"
+        security_groups:
+          - "{{ ec2_sg.group_id }}"
+        network:
+          assign_public_ip: true
+        user_data: |
+          #!/bin/bash
+          yum update -y
+          yum install -y docker
+          systemctl start docker
+          systemctl enable docker
+          usermod -aG docker ec2-user
+        wait: true
+        state: running
+        tags:
+          Name: "{{ ec2_instance_name }}"
+          Project: node-mysql-app
+      register: ec2_instance
+
+    - name: Get EC2 public IP
+      ansible.builtin.set_fact:
+        ec2_public_ip: "{{ ec2_instance.instances[0].public_ip_address }}"
+
+    - name: Display EC2 public IP
+      ansible.builtin.debug:
+        msg: "EC2 public IP: {{ ec2_public_ip }}"
+
+    # ----------------------------------------------------------
+    # Dynamic inventory — add EC2 to in-memory group
+    # ----------------------------------------------------------
+    - name: Add EC2 instance to dynamic inventory group
+      ansible.builtin.add_host:
+        name: "{{ ec2_public_ip }}"
+        groups: web_servers
+        ansible_user: ec2-user
+        ansible_ssh_private_key_file: "~/.ssh/{{ ec2_key_name }}.pem"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+        # Pass RDS connection details to the next play
+        rds_host: "{{ rds_endpoint }}"
+        rds_port: "{{ rds_port }}"
+        rds_db_name: "{{ rds_db_name }}"
+        rds_username: "{{ rds_master_username }}"
+        rds_password: "{{ rds_master_password }}"
+        app_port: "{{ app_port }}"
+        docker_image: "{{ docker_image }}"
+
+    - name: Wait for SSH to become available on EC2
+      ansible.builtin.wait_for:
+        host: "{{ ec2_public_ip }}"
+        port: 22
+        delay: 15
+        timeout: 300
+        state: started
+
+
+# ============================================================
+# PLAYBOOK 2 — Configure EC2 and Deploy Docker Web App
+# ============================================================
+- name: Deploy Node.js web application on EC2
+  hosts: web_servers
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # ----------------------------------------------------------
+    # Docker setup (idempotent — user_data may have already run)
+    # ----------------------------------------------------------
+    - name: Ensure Docker is installed
+      ansible.builtin.package:
+        name: docker
+        state: present
+
+    - name: Ensure Docker service is running and enabled
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add ec2-user to docker group
+      ansible.builtin.user:
+        name: ec2-user
+        groups: docker
+        append: true
+
+    # ----------------------------------------------------------
+    # Pull Docker image
+    # ----------------------------------------------------------
+    - name: Pull Node.js app Docker image
+      community.docker.docker_image:
+        name: "{{ hostvars[inventory_hostname].docker_image }}"
+        source: pull
+        force_source: true
+
+    # ----------------------------------------------------------
+    # Run the Node.js app container with RDS connection details
+    # ----------------------------------------------------------
+    - name: Run Node.js web application container
+      community.docker.docker_container:
+        name: node-mysql-app
+        image: "{{ hostvars[inventory_hostname].docker_image }}"
+        state: started
+        restart_policy: always
+        published_ports:
+          - "80:{{ hostvars[inventory_hostname].app_port }}"
+        env:
+          # Standard Node.js MySQL environment variables —
+          # adjust names to match what philippaul/node-mysql-app:02 expects
+          DB_HOST: "{{ hostvars[inventory_hostname].rds_host }}"
+          DB_PORT: "{{ hostvars[inventory_hostname].rds_port }}"
+          DB_NAME: "{{ hostvars[inventory_hostname].rds_db_name }}"
+          DB_USER: "{{ hostvars[inventory_hostname].rds_username }}"
+          DB_PASSWORD: "{{ hostvars[inventory_hostname].rds_password }}"
+          NODE_ENV: production
+          PORT: "{{ hostvars[inventory_hostname].app_port }}"
+
+    # ----------------------------------------------------------
+    # Verify the container is healthy
+    # ----------------------------------------------------------
+    - name: Wait for the application to respond on port 80
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 80
+        delay: 5
+        timeout: 60
+        state: started
+      delegate_to: localhost
+
+    - name: Verify container is running
+      community.docker.docker_container_info:
+        name: node-mysql-app
+      register: container_info
+
+    - name: Display application status
+      ansible.builtin.debug:
+        msg:
+          - "Container status : {{ container_info.container.State.Status }}"
+          - "Application URL  : http://{{ ansible_host }}"
+          - "RDS endpoint     : {{ hostvars[inventory_hostname].rds_host }}:{{ hostvars[inventory_hostname].rds_port }}"
