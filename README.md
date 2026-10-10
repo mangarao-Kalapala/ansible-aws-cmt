@@ -31,14 +31,14 @@ ssh ec2-user@PRIVATE-IP-ADDRESS-OF-NODE2
 D) run AWS configuration
 aws configure
 
-C)How to Run playbook:
+E)How to Run playbook:
 # 1.Set your RDS password securely via environment variable
 export RDS_PASSWORD="yourPASSPHRASE32#"
 
 # 2.Run the playbook
 ansible-playbook site.yml
   
-E) Connect to RDS DB using mysqlclient (on Ec2 managed server on Linux/unix O/S)
+F) Connect to RDS DB using mysqlclient (on Ec2 managed server on Linux/unix O/S)
 ------------------------------------------
 1.sudo dnf install mariadb105
 2.curl -o global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
