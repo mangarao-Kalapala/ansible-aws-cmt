@@ -1,0 +1,79 @@
+---
+# ============================================================
+# Playbook: cleanup AWS Infrastructure
+# ============================================================
+- name: cleanup RDS and EC2 infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_region: us-east-1
+    ec2_instance_name: web-app-server
+    rds_db_identifier: webapp-mysql-db
+
+  tasks:
+
+    # ----------------------------------------------------------
+    # RDS Instance
+    # ----------------------------------------------------------
+    - name: delete RDS MySQL instance
+      amazon.aws.rds_instance:
+        db_instance_identifier: "{{ rds_db_identifier }}"
+        region: "{{ aws_region }}"
+        state: absent
+        skip_final_snapshot: true
+      register: rds_delete_result
+
+    - name: wait for RDS instance to be deleted
+      amazon.aws.rds_instance_info:
+        db_instance_identifier: "{{ rds_db_identifier }}"
+        region: "{{ aws_region }}"
+      register: rds_info
+      until: rds_info.instances | length == 0
+      retries: 30
+      delay: 30
+      ignore_errors: true
+
+    # ----------------------------------------------------------
+    # EC2 Instance
+    # ----------------------------------------------------------
+    - name: gather EC2 instance info by name tag
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ ec2_instance_name }}"
+          instance-state-name:
+            - pending
+            - running
+            - stopping
+            - stopped
+      register: ec2_info
+
+    - name: delete EC2 instance by ID (skip if not found)
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ ec2_info.instances | map(attribute='instance_id') | list }}"
+        region: "{{ aws_region }}"
+        state: absent
+      when: ec2_info.instances | length > 0
+
+    - name: skip message if EC2 instance not found
+      ansible.builtin.debug:
+        msg: "No EC2 instance named '{{ ec2_instance_name }}' found — skipping deletion."
+      when: ec2_info.instances | length == 0
+
+    - name: wait for EC2 instance to be terminated
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ ec2_instance_name }}"
+          instance-state-name:
+            - pending
+            - running
+            - stopping
+            - stopped
+      register: ec2_wait
+      until: ec2_wait.instances | length == 0
+      retries: 20
+      delay: 15
+      when: ec2_info.instances | length > 0
