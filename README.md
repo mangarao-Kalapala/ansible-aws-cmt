@@ -4,8 +4,6 @@ Objective: Launch a Node.js application in a Docker container and connect it to 
 provision RDS database and EC2 instance, then set up a connection between RDS Database and EC2 instance with ansible YAML source:
 Extend the playbook to deploy a web application that uses the RDS database. Launch a web application in in a Docker container using public image.
 
-A)Prerequisites:
----------------
 Before running the playbook, install the required Ansible collections on control Node:
 
 A) SSH KEY SETUP and connect to Ansible control Node
