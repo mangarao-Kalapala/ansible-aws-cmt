@@ -4,7 +4,7 @@ Objective: Launch a Node.js application in a Docker container and connect it to 
 provision RDS database and EC2 instance, then set up a connection between RDS Database and EC2 instance with ansible YAML source:
 Extend the playbook to deploy a web application that uses the RDS database. Launch a web application in in a Docker container using public image.
 
-Before running the playbook, install the required Ansible collections on control Node:
+#Before running the playbook, install the required Ansible collections on control Node:
 
 A) SSH KEY SETUP and connect to Ansible control Node
 scp -i "ecr-key.pem" ecr-key.pem ec2-user@PUBLIC-IP-ADDRESS-OF-CONTROL-NODE:/home/ec2-user/
@@ -30,14 +30,13 @@ D) run AWS configuration
 aws configure
 
 E)How to Run playbook:
-# 1.Set your RDS password securely via environment variable
+1.Set your RDS password securely via environment variable
 export RDS_PASSWORD="yourPASSPHRASE32#"
 
-# 2.Run the playbook
+2.Run the playbook
 ansible-playbook site.yml
   
 F) Connect to RDS DB using mysqlclient (on Ec2 managed server on Linux/unix O/S)
-------------------------------------------
 1.sudo dnf install mariadb105
 2.curl -o global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 3.mysql -h webapp-mysql-db.caj6cqmi6xl7.us-east-1.rds.amazonaws.com -P 3306 -u admin -p --ssl-ca=./global-bundle.pem
